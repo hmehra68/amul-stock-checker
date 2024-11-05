@@ -4,6 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 import asyncio
 import json
+from telegram.error import TimedOut
 
 # Configure logging
 logging.basicConfig(
@@ -11,10 +12,12 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+logger = logging.getLogger(__name__)
+
 # Configuration
-TELEGRAM_BOT_TOKEN = 'YOUR_BOT_TOKEN'
+TELEGRAM_BOT_TOKEN = '7649995564:AAHd0jXqS2h11diMiQoCiT8bnwQB_kX9ajw'
 PRODUCT_URL = 'https://shop.amul.com/en/product/amul-high-protein-rose-lassi-200-ml-or-pack-of-30'
-CHAT_ID = 'YOUR_CHAT_ID'
+CHAT_ID = '859635791'
 CHECK_INTERVAL = 300  # 5 minutes
 
 class AmulStockCheckerBot:
@@ -35,7 +38,7 @@ class AmulStockCheckerBot:
         if not self.running:
             self.running = True
             await update.message.reply_text('Started monitoring Amul High Protein Rose Lassi stock! You will be notified when it becomes available.')
-            await self.check_stock_periodically(context)
+            context.application.create_task(self.check_stock_periodically(context))
         else:
             await update.message.reply_text('Stock checker is already running!')
 
@@ -56,15 +59,21 @@ class AmulStockCheckerBot:
                         f"Quantity Available: {stock_info['quantity']}\n\n"
                         f"Buy now: {PRODUCT_URL}"
                     )
-                    await context.bot.send_message(
-                        chat_id=CHAT_ID,
-                        text=message,
-                        disable_web_page_preview=False
-                    )
+                    try:
+                        await context.bot.send_message(
+                            chat_id=CHAT_ID,
+                            text=message,
+                            disable_web_page_preview=False
+                        )
+                    except TimedOut:
+                        logger.error("Telegram message timed out, will retry next cycle")
+                    except Exception as e:
+                        logger.error(f"Error sending Telegram message: {e}")
+                
                 self.previous_status = stock_info['in_stock']
                 
             except Exception as e:
-                logging.error(f"Error checking stock: {e}")
+                logger.error(f"Error checking stock: {e}")
             
             await asyncio.sleep(CHECK_INTERVAL)
 
@@ -74,29 +83,21 @@ class AmulStockCheckerBot:
         Returns dict with stock info
         """
         try:
-            # Extract product ID from URL
-            product_id = PRODUCT_URL.split('/')[-1]
-            
-            # First, get the product details
             response = self.session.get(PRODUCT_URL)
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Look for the availability status
             stock_info = {
                 'in_stock': False,
                 'price': 'N/A',
                 'quantity': 0
             }
             
-            # Check for out of stock indicators
             out_of_stock_div = soup.find('div', class_='out-of-stock')
             if not out_of_stock_div:
-                # If we don't find the out of stock div, product might be in stock
                 price_element = soup.find('span', class_='price')
                 if price_element:
                     stock_info['price'] = price_element.text.strip()
                 
-                # Try to find quantity available
                 quantity_element = soup.find('div', class_='stock-qty')
                 if quantity_element:
                     qty_text = quantity_element.text.strip()
@@ -110,20 +111,29 @@ class AmulStockCheckerBot:
             return stock_info
             
         except Exception as e:
-            logging.error(f"Error in check_stock: {e}")
+            logger.error(f"Error in check_stock: {e}")
             return {'in_stock': False, 'price': 'N/A', 'quantity': 0}
 
-async def main():
-    """Main function to run the bot"""
-    bot = AmulStockCheckerBot()
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Add command handlers
-    application.add_handler(CommandHandler("start", bot.start))
-    application.add_handler(CommandHandler("stop", bot.stop))
-    
-    # Start the bot
-    await application.run_polling()
+def run_bot():
+    """Run the bot"""
+    try:
+        # Create bot instance
+        bot = AmulStockCheckerBot()
+        
+        # Create application instance
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", bot.start))
+        application.add_handler(CommandHandler("stop", bot.stop))
+        
+        # Start polling
+        print("Bot started! Press Ctrl+C to stop.")
+        application.run_polling(allowed_updates=["message"])
+        
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
+        raise e
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    run_bot()
